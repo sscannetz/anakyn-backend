@@ -4,6 +4,18 @@
 const pool = require("../config/db");
 const { nextDocNumber } = require("../utils/docNumber");
 
+// ── แปลงเป็นตัวเลขแบบปลอดภัย (กัน NaN ที่ Postgres NUMERIC เก็บได้) ──
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ── sanitize ใบสั่งซ่อม: กัน NaN + เพิ่ม estimated_cost alias (frontend อ่าน estimated_cost แต่คอลัมน์จริงคือ total_cost) ──
+function sanitizeServiceOrder(row) {
+  const cost = toNum(row.total_cost) ?? 0;
+  return { ...row, total_cost: cost, estimated_cost: cost };
+}
+
 async function listServiceOrders(req, res) {
   try {
     const { rows } = await pool.query(
@@ -13,7 +25,7 @@ async function listServiceOrders(req, res) {
        LEFT JOIN products p ON p.id = so.product_id
        ORDER BY so.received_at DESC`
     );
-    res.json(rows);
+    res.json(rows.map(sanitizeServiceOrder));
   } catch (err) {
     res.status(500).json({ error: "ไม่สามารถโหลดรายการใบสั่งซ่อมได้" });
   }
@@ -30,7 +42,7 @@ async function getServiceOrder(req, res) {
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "ไม่พบใบสั่งซ่อม" });
-    res.json(rows[0]);
+    res.json(sanitizeServiceOrder(rows[0]));
   } catch (err) {
     res.status(500).json({ error: "เกิดข้อผิดพลาด" });
   }
