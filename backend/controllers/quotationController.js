@@ -16,7 +16,12 @@ function sanitizeQuotation(row) {
   const vatApplied = row.vat_applied !== false;
   const vat = toNum(row.vat_amount) ?? (vatApplied ? Math.round(sub * 0.07) : 0);
   const total = toNum(row.total) ?? (sub + vat);
-  return { ...row, subtotal: sub, vat_amount: vat, total, grand_total: total };
+  // created_at เป็น alias ของ issued_at — frontend (แอป Expo) อ่าน created_at แต่ตาราง quotations ไม่มีคอลัมน์นี้
+  return {
+    ...row,
+    subtotal: sub, vat_amount: vat, total, grand_total: total,
+    created_at: row.created_at ?? row.issued_at,
+  };
 }
 
 async function listQuotations(req, res) {
