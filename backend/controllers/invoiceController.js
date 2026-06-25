@@ -4,16 +4,40 @@
 const pool = require("../config/db");
 const { nextDocNumber } = require("../utils/docNumber");
 
+// ── แปลงเป็นตัวเลขแบบปลอดภัย: คืน null ถ้าไม่ใช่ตัวเลขจริง (รวมถึงค่า NaN ที่ Postgres NUMERIC เก็บได้) ──
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ── sanitize แถวใบกำกับภาษี: กันค่า NaN/null ที่เคยถูกเก็บผิดในอดีต โดยคำนวณใหม่จาก sales.subtotal ──
+// ต้องการ field เสริม row.subtotal (มาจาก LEFT JOIN sales) เพื่อใช้เป็น fallback ของ tax_base
+function sanitizeInvoice(row) {
+  const base = toNum(row.tax_base) ?? toNum(row.subtotal) ?? 0;
+  const wht  = toNum(row.wht_amount) ?? 0;
+  const vatApplied = row.vat_applied !== false;
+  const vat  = toNum(row.vat_amount) ?? (vatApplied ? Math.round(base * 0.07 * 100) / 100 : 0);
+  const net  = toNum(row.net_payable) ?? (base + vat - wht);
+  const grand = base + vat;   // ยอดรวมทั้งสิ้น (ก่อนหัก ณ ที่จ่าย)
+  // grand_total / subtotal เป็น alias ให้ frontend (เช่นแอป Expo AnakynMobile) ที่อ่านชื่อ field ต่างจาก schema
+  return {
+    ...row,
+    tax_base: base, vat_amount: vat, wht_amount: wht, net_payable: net,
+    grand_total: grand,
+    subtotal: toNum(row.subtotal) ?? base,
+  };
+}
+
 async function listInvoices(req, res) {
   try {
     const { rows } = await pool.query(
-      `SELECT i.*, s.sale_no, c.full_name AS customer_name
+      `SELECT i.*, s.sale_no, s.subtotal, c.full_name AS customer_name
        FROM invoices i
        LEFT JOIN sales s ON s.id = i.sale_id
        LEFT JOIN customers c ON c.id = s.customer_id
        ORDER BY i.issued_at DESC`
     );
-    res.json(rows);
+    res.json(rows.map(sanitizeInvoice));
   } catch (err) {
     res.status(500).json({ error: "ไม่สามารถโหลดรายการใบกำกับภาษีได้" });
   }
@@ -30,7 +54,7 @@ async function getInvoice(req, res) {
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "ไม่พบใบกำกับภาษี" });
-    res.json(rows[0]);
+    res.json(sanitizeInvoice(rows[0]));
   } catch (err) {
     res.status(500).json({ error: "เกิดข้อผิดพลาด" });
   }
@@ -47,17 +71,18 @@ async function createInvoice(req, res) {
     if (!sale.rows[0]) return res.status(404).json({ error: "ไม่พบรายการขายนี้" });
 
     const s = sale.rows[0];
-    const taxBase  = Number(s.subtotal);
+    const taxBase  = toNum(s.subtotal) ?? 0;
+    const whtVal   = toNum(wht_amount) ?? 0;
     const vatAmt   = vat_applied ? Math.round(taxBase * 0.07 * 100) / 100 : 0;
     const grand    = taxBase + vatAmt;
-    const netPayable = grand - Number(wht_amount || 0);
+    const netPayable = grand - whtVal;
     const invoiceNo = await nextDocNumber("invoices", "invoice_no", "INV");
 
     const { rows } = await pool.query(
       `INSERT INTO invoices
         (invoice_no, sale_id, tax_base, vat_amount, vat_applied, wht_amount, net_payable, due_date, payment_methods, issued_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [invoiceNo, sale_id, taxBase, vatAmt, vat_applied, wht_amount, netPayable, due_date || null, JSON.stringify([]), req.user.id]
+      [invoiceNo, sale_id, taxBase, vatAmt, vat_applied, whtVal, netPayable, due_date || null, JSON.stringify([]), req.user.id]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -73,16 +98,23 @@ async function updateInvoice(req, res) {
   const { vat_applied, due_date, payment_methods } = req.body;
 
   try {
-    const existing = await pool.query("SELECT * FROM invoices WHERE id = $1", [id]);
+    const existing = await pool.query(
+      `SELECT i.*, s.subtotal FROM invoices i
+       LEFT JOIN sales s ON s.id = i.sale_id
+       WHERE i.id = $1`,
+      [id]
+    );
     if (!existing.rows[0]) return res.status(404).json({ error: "ไม่พบใบกำกับภาษี" });
     const inv = existing.rows[0];
 
     // ถ้ามีการเปลี่ยน vat_applied ต้องคำนวณ vat_amount และ net_payable ใหม่
+    // ใช้ toNum กัน NaN และ fallback ไปที่ sales.subtotal สำหรับใบเดิมที่ tax_base เคยเพี้ยน
     const newVatApplied = vat_applied !== undefined ? vat_applied : inv.vat_applied;
-    const taxBase = Number(inv.tax_base);
+    const taxBase = toNum(inv.tax_base) ?? toNum(inv.subtotal) ?? 0;
+    const whtVal = toNum(inv.wht_amount) ?? 0;
     const newVatAmt = newVatApplied ? Math.round(taxBase * 0.07 * 100) / 100 : 0;
     const grand = taxBase + newVatAmt;
-    const newNetPayable = grand - Number(inv.wht_amount || 0);
+    const newNetPayable = grand - whtVal;
 
     const newDueDate = due_date !== undefined ? due_date : inv.due_date;
     const newPaymentMethods = payment_methods !== undefined ? JSON.stringify(payment_methods) : JSON.stringify(inv.payment_methods || []);
@@ -93,7 +125,7 @@ async function updateInvoice(req, res) {
        WHERE id = $6 RETURNING *`,
       [newVatApplied, newVatAmt, newNetPayable, newDueDate || null, newPaymentMethods, id]
     );
-    res.json(rows[0]);
+    res.json(sanitizeInvoice({ ...rows[0], subtotal: inv.subtotal }));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "ไม่สามารถแก้ไขใบกำกับภาษีได้" });
