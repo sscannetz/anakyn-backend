@@ -54,7 +54,14 @@ async function getInvoice(req, res) {
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "ไม่พบใบกำกับภาษี" });
-    res.json(sanitizeInvoice(rows[0]));
+    // ดึงรายการสินค้าจากการขายที่ใบกำกับอ้างอิง เพื่อให้หน้ารายละเอียด/ปริ้น แสดงรายการได้
+    const items = await pool.query(
+      `SELECT si.qty, si.unit_price, si.line_total, p.name AS product_name, p.sku
+       FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
+       WHERE si.sale_id = $1`,
+      [rows[0].sale_id]
+    );
+    res.json(sanitizeInvoice({ ...rows[0], items: items.rows }));
   } catch (err) {
     res.status(500).json({ error: "เกิดข้อผิดพลาด" });
   }
