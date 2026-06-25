@@ -4,6 +4,21 @@
 const pool = require("../config/db");
 const { nextDocNumber } = require("../utils/docNumber");
 
+// ── แปลงเป็นตัวเลขแบบปลอดภัย: คืน null ถ้าไม่ใช่ตัวเลขจริง (รวมถึงค่า NaN ที่ Postgres NUMERIC เก็บได้) ──
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ── sanitize แถวใบเสนอราคา: กันค่า NaN/null + เพิ่ม grand_total alias ให้ frontend (เช่นแอป Expo) ──
+function sanitizeQuotation(row) {
+  const sub = toNum(row.subtotal) ?? 0;
+  const vatApplied = row.vat_applied !== false;
+  const vat = toNum(row.vat_amount) ?? (vatApplied ? Math.round(sub * 0.07) : 0);
+  const total = toNum(row.total) ?? (sub + vat);
+  return { ...row, subtotal: sub, vat_amount: vat, total, grand_total: total };
+}
+
 async function listQuotations(req, res) {
   try {
     const { rows } = await pool.query(
@@ -11,7 +26,7 @@ async function listQuotations(req, res) {
        LEFT JOIN customers c ON c.id = q.customer_id
        ORDER BY q.issued_at DESC`
     );
-    res.json(rows);
+    res.json(rows.map(sanitizeQuotation));
   } catch (err) {
     res.status(500).json({ error: "ไม่สามารถโหลดรายการใบเสนอราคาได้" });
   }
@@ -26,7 +41,7 @@ async function getQuotation(req, res) {
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "ไม่พบใบเสนอราคา" });
-    res.json(rows[0]);
+    res.json(sanitizeQuotation(rows[0]));
   } catch (err) {
     res.status(500).json({ error: "เกิดข้อผิดพลาด" });
   }
@@ -40,7 +55,7 @@ async function createQuotation(req, res) {
   }
 
   try {
-    const subtotal = items.reduce((sum, it) => sum + it.price * (it.qty || 1), 0);
+    const subtotal = items.reduce((sum, it) => sum + (toNum(it.price) ?? 0) * (toNum(it.qty) ?? 1), 0);
     const vatAmount = vat_enabled ? Math.round(subtotal * 0.07) : 0;
     const total = subtotal + vatAmount;
 
@@ -54,7 +69,7 @@ async function createQuotation(req, res) {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [quoteNo, customer_id, JSON.stringify(items), subtotal, vatAmount, vat_enabled, total, validUntil, notes, req.user.id]
     );
-    res.status(201).json(rows[0]);
+    res.status(201).json(sanitizeQuotation(rows[0]));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "ไม่สามารถสร้างใบเสนอราคาได้" });
@@ -70,7 +85,7 @@ async function updateQuotationStatus(req, res) {
       [status, req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "ไม่พบใบเสนอราคา" });
-    res.json(rows[0]);
+    res.json(sanitizeQuotation(rows[0]));
   } catch (err) {
     res.status(500).json({ error: "ไม่สามารถอัพเดตสถานะได้" });
   }
@@ -87,9 +102,10 @@ async function updateQuotation(req, res) {
     if (!existing.rows[0]) return res.status(404).json({ error: "ไม่พบใบเสนอราคา" });
     const q = existing.rows[0];
 
+    const sub = toNum(q.subtotal) ?? 0;
     const newVatApplied = vat_applied !== undefined ? vat_applied : q.vat_applied;
-    const newVatAmt = newVatApplied ? Math.round(Number(q.subtotal) * 0.07) : 0;
-    const newTotal = Number(q.subtotal) + newVatAmt;
+    const newVatAmt = newVatApplied ? Math.round(sub * 0.07) : 0;
+    const newTotal = sub + newVatAmt;
     const newNotes = notes !== undefined ? notes : q.notes;
     const newValidUntil = valid_until !== undefined ? valid_until : q.valid_until;
 
@@ -99,7 +115,7 @@ async function updateQuotation(req, res) {
        WHERE id = $6 RETURNING *`,
       [newVatApplied, newVatAmt, newTotal, newNotes, newValidUntil, id]
     );
-    res.json(rows[0]);
+    res.json(sanitizeQuotation(rows[0]));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "ไม่สามารถแก้ไขใบเสนอราคาได้" });
