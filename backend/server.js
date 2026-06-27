@@ -8,7 +8,24 @@ const morgan = require("morgan");
 
 const app = express();
 
-app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
+// ── CORS: อนุญาตเว็บ live (Vercel) + dev (localhost) + ค่าใน env ──
+// เดิมตั้ง origin = FRONTEND_URL เดี่ยวๆ (localhost) ทำให้เว็บ production โดน CORS บล็อก → โหลดข้อมูลไม่ได้
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "http://localhost:5173",
+  "http://localhost:8081",
+  "https://dist-tau-eight-30.vercel.app",
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // ไม่มี origin = แอป native / server-to-server / curl → อนุญาต
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    // เผื่อ deploy ใหม่บน Vercel ที่ลงท้าย .vercel.app
+    try { if (/\.vercel\.app$/.test(new URL(origin).hostname)) return cb(null, true); } catch (_) {}
+    return cb(null, false);
+  },
+}));
 app.use(express.json());
 app.use(morgan("dev"));
 
