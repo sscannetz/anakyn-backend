@@ -49,7 +49,10 @@ const T_INV = {
   },
 };
 
-const fmt_inv = (n) => Math.round(Number(n)).toLocaleString("th-TH");
+const fmt_inv = (n) => {
+  const num = Number(n);
+  return Math.round(Number.isFinite(num) ? num : 0).toLocaleString("th-TH");
+};
 
 // ── ช่องทางชำระเงิน (ตามต้นฉบับ) ──────────────────────────────────────────
 const PAY_OPTIONS = (lang) => [
@@ -405,19 +408,28 @@ export default function AnakynInvoice({ navigate }) {
 
         {loading && <div style={{fontSize:12,color:"#a07080"}}>{t.loading}</div>}
 
-        {!loading && invoices.map((inv) => (
+        {!loading && invoices.map((inv) => {
+          // ── คำนวณ fallback กรณี backend ส่ง net_payable/vat_amount มาเป็น null ──
+          const base   = Number(inv.tax_base ?? inv.subtotal ?? 0) || 0;
+          const whtAmt = Number(inv.wht_amount) || 0;
+          const vatAmt = Number(
+            inv.vat_amount ?? (inv.vat_applied !== false ? base * 0.07 : 0)
+          ) || 0;
+          const netPay = Number(inv.net_payable ?? (base + vatAmt - whtAmt)) || 0;
+          return (
           <div key={inv.id} onClick={()=>setViewingInvoice(inv)}
             style={{background:"#fff",borderRadius:10,border:"0.5px solid #e8d5d9",padding:"10px 12px",marginBottom:7,cursor:"pointer"}}>
             <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
               <span style={{fontSize:12,fontWeight:500,color:"#550a19"}}>{inv.invoice_no}</span>
-              <span style={{fontSize:13,fontWeight:500,color:"#2c1015"}}>฿{fmt_inv(inv.net_payable)}</span>
+              <span style={{fontSize:13,fontWeight:500,color:"#2c1015"}}>฿{fmt_inv(netPay)}</span>
             </div>
             <div style={{fontSize:11,color:"#a07080"}}>
-              {inv.customer_name || "ไม่ระบุลูกค้า"} · VAT ฿{fmt_inv(inv.vat_amount)}
-              {Number(inv.wht_amount) > 0 && ` · WHT ฿${fmt_inv(inv.wht_amount)}`}
+              {inv.customer_name || "ไม่ระบุลูกค้า"} · VAT ฿{fmt_inv(vatAmt)}
+              {whtAmt > 0 && ` · WHT ฿${fmt_inv(whtAmt)}`}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {!loading && invoices.length === 0 && (
           <div style={{fontSize:12,color:"#a07080",textAlign:"center",padding:"20px 0"}}>{t.no_invoices}</div>

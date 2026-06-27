@@ -52,16 +52,17 @@ async function getQuotation(req, res) {
   }
 }
 
-// POST /api/quotations  { customer_id, items:[{name,sku,detail,specs,qty,price}], valid_days, vat_enabled, notes }
+// POST /api/quotations  { customer_id, items:[{name,sku,detail,specs,qty,price}], valid_days, vat_enabled, vat_rate, notes }
 async function createQuotation(req, res) {
-  const { customer_id, items, valid_days = 30, vat_enabled = true, notes = "" } = req.body;
+  const { customer_id, items, valid_days = 30, vat_enabled = true, vat_rate = 7, notes = "" } = req.body;
   if (!items || items.length === 0) {
     return res.status(400).json({ error: "กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ" });
   }
 
   try {
     const subtotal = items.reduce((sum, it) => sum + (toNum(it.price) ?? 0) * (toNum(it.qty) ?? 1), 0);
-    const vatAmount = vat_enabled ? Math.round(subtotal * 0.07) : 0;
+    const rate = toNum(vat_rate) ?? 7;
+    const vatAmount = vat_enabled ? Math.round(subtotal * rate / 100) : 0;
     const total = subtotal + vatAmount;
 
     const quoteNo = await nextDocNumber("quotations", "quote_no", "QT");

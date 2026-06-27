@@ -70,7 +70,7 @@ async function getInvoice(req, res) {
 // POST /api/invoices  { sale_id, wht_amount, due_date, vat_applied }
 // vat_applied: true|false — ค่าเริ่มต้นตอนออกใบ (แก้ไขเพิ่มเติมได้ทีหลังผ่าน PATCH)
 async function createInvoice(req, res) {
-  const { sale_id, wht_amount = 0, due_date, vat_applied = true } = req.body;
+  const { sale_id, wht_amount = 0, due_date, vat_applied = true, vat_rate = 7 } = req.body;
   if (!sale_id) return res.status(400).json({ error: "กรุณาระบุรายการขายที่จะออกใบกำกับภาษี" });
 
   try {
@@ -80,7 +80,8 @@ async function createInvoice(req, res) {
     const s = sale.rows[0];
     const taxBase  = toNum(s.subtotal) ?? 0;
     const whtVal   = toNum(wht_amount) ?? 0;
-    const vatAmt   = vat_applied ? Math.round(taxBase * 0.07 * 100) / 100 : 0;
+    const rate     = toNum(vat_rate) ?? 7;
+    const vatAmt   = vat_applied ? Math.round(taxBase * rate / 100 * 100) / 100 : 0;
     const grand    = taxBase + vatAmt;
     const netPayable = grand - whtVal;
     const invoiceNo = await nextDocNumber("invoices", "invoice_no", "INV");
