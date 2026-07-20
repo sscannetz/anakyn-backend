@@ -42,6 +42,7 @@ app.use("/api/customers",       require("./routes/customers"));
 app.use("/api/suppliers",       require("./routes/suppliers"));
 app.use("/api/users",           require("./routes/users"));
 app.use("/api/summary",         require("./routes/summary"));
+app.use("/api/receipts",        require("./routes/receipts"));
 
 app.get("/api/health", (req, res) => res.json({ status: "ok", time: new Date() }));
 
