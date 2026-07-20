@@ -5,13 +5,13 @@
 -- ═══════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS receipts (
-  id             SERIAL PRIMARY KEY,
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   receipt_no     TEXT UNIQUE NOT NULL,              -- เช่น RCP-2026-00001
-  sale_id        INTEGER REFERENCES sales(id),      -- การขายที่ใบเสร็จนี้อ้างอิง
+  sale_id        UUID REFERENCES sales(id),         -- การขายที่ใบเสร็จนี้อ้างอิง (UUID ให้ตรงกับ sales.id)
   amount         NUMERIC(12,2) NOT NULL DEFAULT 0,  -- จำนวนเงินที่รับ
   payment_method TEXT DEFAULT 'cash',               -- cash | transfer | card | other
   note           TEXT DEFAULT '',
-  issued_by      INTEGER REFERENCES users(id),
+  issued_by      UUID REFERENCES users(id),         -- UUID ให้ตรงกับ users.id
   issued_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
