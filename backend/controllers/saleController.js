@@ -47,6 +47,7 @@ async function createSale(req, res) {
     customer_id, partner_id, items,
     vip_discount = 0, extra_discount = 0,
     vat_enabled = true, payment_methods = [],
+    customer_name, customer_phone,          // ลูกค้าที่พิมพ์ชื่อเอง (walk-in) — ไม่ต้องมีในระบบก่อน
   } = req.body;
 
   if (!items || items.length === 0) {
@@ -56,6 +57,25 @@ async function createSale(req, res) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    // ── ถ้าไม่ได้เลือกลูกค้าจากระบบ แต่พิมพ์ชื่อมา → หาจากชื่อเดิม ถ้าไม่มีก็สร้างใหม่ ──
+    let saleCustomerId = customer_id || null;
+    if (!saleCustomerId && customer_name && String(customer_name).trim()) {
+      const name = String(customer_name).trim();
+      const found = await client.query(
+        "SELECT id FROM customers WHERE lower(full_name) = lower($1) LIMIT 1",
+        [name]
+      );
+      if (found.rows[0]) {
+        saleCustomerId = found.rows[0].id;
+      } else {
+        const created = await client.query(
+          "INSERT INTO customers (full_name, phone) VALUES ($1,$2) RETURNING id",
+          [name, customer_phone || null]
+        );
+        saleCustomerId = created.rows[0].id;
+      }
+    }
 
     // คำนวณยอดรวม
     const subtotal = items.reduce((sum, it) => sum + it.unit_price * it.qty, 0);
@@ -71,7 +91,7 @@ async function createSale(req, res) {
          extra_discount, vat_enabled, vat_amount, total, payment_methods, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'completed')
        RETURNING *`,
-      [saleNo, customer_id, req.user.id, partner_id || null, subtotal, vip_discount,
+      [saleNo, saleCustomerId, req.user.id, partner_id || null, subtotal, vip_discount,
        extra_discount, vat_enabled, vatAmount, total, JSON.stringify(payment_methods)]
     );
     const sale = saleResult.rows[0];
