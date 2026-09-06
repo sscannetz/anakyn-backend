@@ -17,8 +17,15 @@ async function getSummary(req, res) {
       [interval]
     );
 
+    // stock_count  = จำนวน "รายการ" สินค้าที่เปิดขายอยู่
+    // total_pieces = จำนวน "ชิ้น" รวมทุกรายการในร้าน (รวมที่ปิดขายด้วย)
+    // total_items  = จำนวนรายการสินค้าทั้งหมดในร้าน
     const stockCount = await pool.query(
-      "SELECT COUNT(*) AS stock_count FROM products WHERE is_available = true"
+      `SELECT
+         COUNT(*) FILTER (WHERE is_available = true)        AS stock_count,
+         COUNT(*)                                           AS total_items,
+         COALESCE(SUM(stock_qty), 0)                        AS total_pieces
+       FROM products`
     );
 
     const pendingPO = await pool.query(
@@ -88,10 +95,15 @@ async function getSummary(req, res) {
       order_count: Number(sales.rows[0].order_count),
       vat_collected: Number(sales.rows[0].vat_collected),
       stock_count: Number(stockCount.rows[0].stock_count),
+      total_items: Number(stockCount.rows[0].total_items),
+      total_pieces: Number(stockCount.rows[0].total_pieces),
       pending_po: Number(pendingPO.rows[0].cnt),
       pending_service: Number(pendingService.rows[0].cnt),
       pending_quotation: Number(pendingQuotation.rows[0].cnt),
+      // กำไรคำนวณจากราคาขายที่ยังไม่รวม VAT (VAT บวกเพิ่มบนบิล ไม่ใช่รายได้ร้าน)
+      // profit_incl_vat = กำไร + VAT ที่เก็บมา = เงินส่วนเกินที่รับเข้าจริงก่อนนำส่ง VAT
       estimated_profit: Number(profitEstimate.rows[0].profit),
+      profit_incl_vat: Number(profitEstimate.rows[0].profit) + Number(sales.rows[0].vat_collected),
       top_items: topItems.rows.map(r => ({ name: r.name, sku: r.sku, qty: Number(r.qty), amount: Number(r.amount) })),
       payment_breakdown: paymentTotals,
       daily_chart: dailyChart.rows.map(r => ({ day: r.day, total: Number(r.total) })),
