@@ -3,9 +3,33 @@
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
 
+// คอลัมน์ที่แก้ผ่าน PUT /api/products/:id ได้ (ไม่รวม id, created_by, created_at)
+const UPDATABLE_FIELDS = new Set([
+  "sku", "name", "category", "photo_url",
+  "metal_type", "metal_weight_g", "metal_weight_adj_g",
+  "gold_price_at_creation", "silver_price_at_creation", "metal_cost",
+  "labor_cost", "diamonds", "diamond_total_cost",
+  "has_certificate", "certificate_no",
+  "cost_price", "sale_price", "stock_qty", "is_available",
+  "partner_commission_pct",
+]);
+
+// รายการคอลัมน์แบบไม่เอา photo_url — ใช้กับ ?light=true
+// (photo_url เก็บรูป base64 ก้อนละ ~60-100KB หน้าไหนไม่ได้โชว์รูปไม่ต้องลากมา)
+const LIGHT_COLUMNS = [
+  "id", "sku", "name", "category",
+  "metal_type", "metal_weight_g", "metal_weight_adj_g",
+  "gold_price_at_creation", "silver_price_at_creation", "metal_cost",
+  "labor_cost", "diamonds", "diamond_total_cost",
+  "has_certificate", "certificate_no",
+  "cost_price", "sale_price", "stock_qty", "is_available",
+  "partner_commission_pct", "created_by", "created_at", "updated_at",
+  "(photo_url IS NOT NULL) AS has_photo",
+].join(", ");
+
 // GET /api/products?category=ring&search=แหวน&available=true
 async function listProducts(req, res) {
-  const { category, search, available, partner_view } = req.query;
+  const { category, search, available, partner_view, light } = req.query;
   const conditions = [];
   const values = [];
   let i = 1;
@@ -27,8 +51,9 @@ async function listProducts(req, res) {
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
   try {
+    const columns = light === "true" ? LIGHT_COLUMNS : "*";
     const { rows } = await pool.query(
-      `SELECT * FROM products ${where} ORDER BY created_at DESC`,
+      `SELECT ${columns} FROM products ${where} ORDER BY created_at DESC`,
       values
     );
 
@@ -105,15 +130,21 @@ async function createProduct(req, res) {
 // PUT /api/products/:id
 async function updateProduct(req, res) {
   const fields = req.body;
-  const keys = Object.keys(fields);
+  // รับเฉพาะคอลัมน์ในลิสต์นี้ — ชื่อคอลัมน์ถูกต่อเข้า SQL ตรง ๆ ถ้าไม่กรอง
+  // client ส่ง key อะไรมาก็เขียนทับได้หมด (รวม id / created_by) และแทรก SQL ได้
+  const keys = Object.keys(fields).filter((k) => UPDATABLE_FIELDS.has(k));
   if (keys.length === 0) return res.status(400).json({ error: "ไม่มีข้อมูลที่จะอัพเดต" });
 
-  const setClause = keys.map((k, idx) => `${k} = $${idx + 1}`).join(", ");
+  const setClause = keys.map((k, idx) => `"${k}" = $${idx + 1}`).join(", ");
   const values = keys.map((k) => fields[k]);
+
+  // ส่งรูปกลับเฉพาะตอนที่แก้รูปจริง — ปุ่ม +/- จำนวนคงเหลือยิง PUT ทุกครั้งที่กด
+  // ถ้า RETURNING * ตลอด จะดาวน์โหลดรูป base64 กลับมาทุกครั้งที่กดปุ่มโดยไม่ได้ใช้
+  const returning = keys.includes("photo_url") ? "*" : LIGHT_COLUMNS;
 
   try {
     const { rows } = await pool.query(
-      `UPDATE products SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`,
+      `UPDATE products SET ${setClause} WHERE id = $${keys.length + 1} RETURNING ${returning}`,
       [...values, req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "ไม่พบสินค้า" });

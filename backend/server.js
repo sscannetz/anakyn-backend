@@ -26,6 +26,15 @@ app.use(cors({
     return cb(null, false);
   },
 }));
+// ── Webhook ของ Omise ต้องมาก่อน express.json() ──
+// การตรวจลายเซ็น HMAC ต้องใช้ body ดิบ ถ้า express.json() แปลงเป็น object ไปแล้ว
+// ค่าที่คำนวณได้จะไม่มีวันตรงกับลายเซ็นที่ Omise ส่งมา
+app.post(
+  "/api/webhooks/omise",
+  express.raw({ type: "application/json" }),
+  require("./controllers/webhookController").omiseWebhook
+);
+
 app.use(express.json());
 app.use(morgan("dev"));
 
@@ -43,6 +52,7 @@ app.use("/api/suppliers",       require("./routes/suppliers"));
 app.use("/api/users",           require("./routes/users"));
 app.use("/api/summary",         require("./routes/summary"));
 app.use("/api/receipts",        require("./routes/receipts"));
+app.use("/api/payments",        require("./routes/payments"));
 
 app.get("/api/health", (req, res) => res.json({ status: "ok", time: new Date() }));
 
