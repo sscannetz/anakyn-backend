@@ -191,13 +191,15 @@ async function updateWorkOrderStatus(req, res) {
   const allowed = ["ordered", "in_production", "qc", "delivered"];
   if (!allowed.includes(status)) return res.status(400).json({ error: "สถานะไม่ถูกต้อง" });
   try {
+    // ห้ามใช้ $1 ซ้ำทั้งใน SET และใน CASE — Postgres จะเดาชนิดขัดกันเอง
+    // (ช่อง status เป็น VARCHAR แต่ในการเทียบเป็น TEXT) แยกเป็นพารามิเตอร์ของใครของมัน
     const { rows } = await pool.query(
       `UPDATE work_orders
           SET status = $1,
-              returned_at = CASE WHEN $1 = 'delivered' THEN COALESCE($2::date, CURRENT_DATE) ELSE returned_at END,
+              returned_at = CASE WHEN $2::boolean THEN COALESCE($3::date, CURRENT_DATE) ELSE returned_at END,
               updated_at = NOW()
-        WHERE id = $3 RETURNING *`,
-      [status, returned_at || null, req.params.id]
+        WHERE id = $4 RETURNING *`,
+      [status, status === "delivered", returned_at || null, req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "ไม่พบใบสั่งทำ" });
     res.json(rows[0]);
