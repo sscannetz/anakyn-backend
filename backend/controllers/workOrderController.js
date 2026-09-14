@@ -186,6 +186,7 @@ async function createWorkOrder(req, res) {
 
 // PATCH /api/work-orders/:id/status { status }
 async function updateWorkOrderStatus(req, res) {
+  await ensureTables();
   const { status, returned_at } = req.body;
   const allowed = ["ordered", "in_production", "qc", "delivered"];
   if (!allowed.includes(status)) return res.status(400).json({ error: "สถานะไม่ถูกต้อง" });
@@ -193,7 +194,7 @@ async function updateWorkOrderStatus(req, res) {
     const { rows } = await pool.query(
       `UPDATE work_orders
           SET status = $1,
-              returned_at = CASE WHEN $1 = 'delivered' THEN COALESCE($2, CURRENT_DATE) ELSE returned_at END,
+              returned_at = CASE WHEN $1 = 'delivered' THEN COALESCE($2::date, CURRENT_DATE) ELSE returned_at END,
               updated_at = NOW()
         WHERE id = $3 RETURNING *`,
       [status, returned_at || null, req.params.id]
@@ -202,7 +203,7 @@ async function updateWorkOrderStatus(req, res) {
     res.json(rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "ไม่สามารถอัพเดตสถานะได้" });
+    res.status(500).json({ error: "ไม่สามารถอัพเดตสถานะได้", detail: err.message });
   }
 }
 
