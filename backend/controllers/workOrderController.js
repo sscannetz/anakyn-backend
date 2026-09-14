@@ -5,8 +5,25 @@
 //                          ใบสั่งทำ   = เราสั่งช่างผลิตใหม่ ส่งทอง+เพชรออกไป แล้วรับเข้าสต๊อก
 // เลขเอกสารรันแยกชุด: JOB-2026-00001
 // ═══════════════════════════════════════════════════════════════
+const fs = require("fs");
+const path = require("path");
 const pool = require("../config/db");
 const { nextDocNumber } = require("../utils/docNumber");
+
+// ── สร้างตารางให้เองตอนถูกเรียกครั้งแรก ──
+// Render แพลนฟรีไม่มี Shell จึงรัน migration มือไม่ได้ และ hook ตอน server start
+// ก็พึ่งไม่ได้ (instance หลับแล้วตื่นใหม่ / deploy ไม่ทันเห็น log ว่าพังตรงไหน)
+// เช็คที่ handler เลยจบปัญหา: เปิดหน้าใบสั่งทำครั้งแรก ตารางก็มา
+// CREATE TABLE IF NOT EXISTS เป็น idempotent เรียกซ้ำไม่เสียหาย และแคชด้วย flag
+let tablesReady = false;
+async function ensureTables() {
+  if (tablesReady) return;
+  const file = path.join(__dirname, "..", "db", "migration_007_work_orders.sql");
+  const sql = fs.readFileSync(file, "utf-8");
+  await pool.query(sql);
+  tablesReady = true;
+  console.log("✅ ตาราง work_orders พร้อมใช้งาน");
+}
 
 // ── ความบริสุทธิ์ของทองตามกะรัต — ใช้แปลงน้ำหนักโลหะเป็น "ทองแท้ 100%"
 //    ช่างกับร้านทองใช้เลขนี้ชั่งกันตอนรับ-ส่งงาน ต้องคิดฝั่ง server ที่เดียว
@@ -63,6 +80,7 @@ function safeJson(v) { try { return JSON.parse(v); } catch (_) { return []; } }
 // ─────────────────────────────────────────────
 async function listWorkOrders(req, res) {
   try {
+    await ensureTables();
     const { rows } = await pool.query(
       `SELECT wo.*, COALESCE(c.full_name, wo.customer_name) AS customer_name,
               (SELECT COUNT(*) FROM work_order_items i WHERE i.work_order_id = wo.id) AS item_count
@@ -73,12 +91,14 @@ async function listWorkOrders(req, res) {
     res.json(rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "ไม่สามารถโหลดรายการใบสั่งทำได้" });
+    // ส่ง detail กลับไปด้วย — แอปนี้ต้องล็อกอินอยู่แล้ว และช่วยให้ debug ได้โดยไม่ต้องเปิด log ที่ Render
+    res.status(500).json({ error: "ไม่สามารถโหลดรายการใบสั่งทำได้", detail: err.message });
   }
 }
 
 async function getWorkOrder(req, res) {
   try {
+    await ensureTables();
     const { rows } = await pool.query(
       `SELECT wo.*, COALESCE(c.full_name, wo.customer_name) AS customer_name,
               COALESCE(c.phone, wo.customer_phone) AS customer_phone
@@ -115,6 +135,7 @@ async function createWorkOrder(req, res) {
 
   const client = await pool.connect();
   try {
+    await ensureTables();
     await client.query("BEGIN");
     const workNo = await nextDocNumber("work_orders", "work_no", "JOB");
     const t = orderTotals(items);
@@ -157,7 +178,7 @@ async function createWorkOrder(req, res) {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
-    res.status(500).json({ error: "ไม่สามารถสร้างใบสั่งทำได้" });
+    res.status(500).json({ error: "ไม่สามารถสร้างใบสั่งทำได้", detail: err.message });
   } finally {
     client.release();
   }

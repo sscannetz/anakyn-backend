@@ -66,4 +66,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 Anakyn Gems API running on http://localhost:${PORT}`);
+  // รัน migration ที่ค้างอยู่หลังเปิดพอร์ตแล้ว — ถ้าพังก็ยังให้บริการต่อได้
+  // (Render แพลนฟรีไม่มี Shell จึงรัน psql เองไม่ได้ ต้องให้ server รันให้)
+  require("./db/autoMigrate").autoMigrate();
 });

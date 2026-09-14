@@ -7,8 +7,6 @@
 -- Render แพลนฟรีไม่มี Shell — ไฟล์นี้ถูกรันอัตโนมัติโดย db/autoMigrate.js ตอน server start
 -- ═══════════════════════════════════════════════════════════════
 
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
 CREATE TABLE IF NOT EXISTS work_orders (
   id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   work_no           VARCHAR(32) UNIQUE NOT NULL,          -- JOB-2026-00001
