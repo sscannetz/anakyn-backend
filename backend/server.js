@@ -46,6 +46,7 @@ app.use("/api/invoices",        require("./routes/invoices"));
 app.use("/api/quotations",      require("./routes/quotations"));
 app.use("/api/purchase-orders", require("./routes/purchaseOrders"));
 app.use("/api/service-orders",  require("./routes/serviceOrders"));
+app.use("/api/work-orders",     require("./routes/workOrders"));
 app.use("/api/partners",        require("./routes/partners"));
 app.use("/api/customers",       require("./routes/customers"));
 app.use("/api/suppliers",       require("./routes/suppliers"));
