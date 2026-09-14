@@ -4,13 +4,15 @@
 -- คนละเรื่องกับ service_orders (ใบสั่งซ่อม) — ใบสั่งซ่อมคือของลูกค้าที่เอามาซ่อม
 -- ใบสั่งทำคืองานที่เราสั่งช่างผลิตใหม่ ส่งทองกับเพชรออกไปให้ช่าง แล้วรับของกลับมาเข้าสต๊อก
 --
--- รันที่ Render shell:  psql $DATABASE_URL -f db/migration_007_work_orders.sql
+-- Render แพลนฟรีไม่มี Shell — ไฟล์นี้ถูกรันอัตโนมัติโดย db/autoMigrate.js ตอน server start
 -- ═══════════════════════════════════════════════════════════════
 
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 CREATE TABLE IF NOT EXISTS work_orders (
-  id                SERIAL PRIMARY KEY,
+  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   work_no           VARCHAR(32) UNIQUE NOT NULL,          -- JOB-2026-00001
-  customer_id       INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+  customer_id       UUID REFERENCES customers(id) ON DELETE SET NULL,
   customer_name     TEXT,                                 -- กรอกอิสระได้ ไม่ต้องมีในตารางลูกค้า
   customer_phone    TEXT,
   workshop          TEXT,                                 -- ช่าง / โรงงานที่รับงาน
@@ -31,18 +33,18 @@ CREATE TABLE IF NOT EXISTS work_orders (
   total_pure_gold_g NUMERIC(10,2) DEFAULT 0,              -- เทียบทองแท้ 100%
   total_labor_cost  NUMERIC(12,2) DEFAULT 0,              -- ค่าแรง + ค่าชุบ
 
-  created_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_by        UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at        TIMESTAMP DEFAULT NOW(),
   updated_at        TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS work_order_items (
-  id                  SERIAL PRIMARY KEY,
-  work_order_id       INTEGER NOT NULL REFERENCES work_orders(id) ON DELETE CASCADE,
+  id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  work_order_id       UUID NOT NULL REFERENCES work_orders(id) ON DELETE CASCADE,
   line_no             INTEGER NOT NULL,
 
   -- ดึงจากสต๊อก: เก็บ product_id ไว้อ้างอิงต้นแบบ · กรอกมือ: เป็น NULL
-  product_id          INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  product_id          UUID REFERENCES products(id) ON DELETE SET NULL,
   design_code         TEXT,                               -- รหัส / แบบ
   name                TEXT NOT NULL,
   photo_url           TEXT,                               -- base64 หรือ URL รูปที่เลือกเอง
@@ -62,7 +64,7 @@ CREATE TABLE IF NOT EXISTS work_order_items (
   stones              JSONB DEFAULT '[]',
 
   -- สินค้าที่สร้างเข้าสต๊อกจากรายการนี้แล้ว — มีค่า = กดเข้าสต๊อกไปแล้ว กันกดซ้ำ
-  stocked_product_id  INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  stocked_product_id  UUID REFERENCES products(id) ON DELETE SET NULL,
 
   created_at          TIMESTAMP DEFAULT NOW()
 );
