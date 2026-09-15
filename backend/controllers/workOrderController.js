@@ -157,6 +157,8 @@ function jobFields(b = {}) {
     (st) => st && (st.shape || st.carat || st.cert_no)
   ).map((st) => ({
     shape: st.shape || "",
+    color: st.color || "",      // สีเพชร D–M / Fancy
+    clarity: st.clarity || "",  // ความสะอาด FL–I3
     carat: num(st.carat),
     qty: Math.max(1, parseInt(st.qty, 10) || 1),
     has_cert: !!st.has_cert,
