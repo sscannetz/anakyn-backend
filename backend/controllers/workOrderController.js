@@ -20,7 +20,7 @@ async function ensureTables() {
   if (tablesReady) return;
   const dir = path.join(__dirname, "..", "db");
   // 007 สร้างตาราง · 008 เพิ่มคอลัมน์ของใบสั่งทำโครงใหม่ (1 ใบ = 1 งาน)
-  for (const f of ["migration_007_work_orders.sql", "migration_008_work_order_job.sql"]) {
+  for (const f of ["migration_007_work_orders.sql", "migration_008_work_order_job.sql", "migration_009_work_order_multi.sql"]) {
     await pool.query(fs.readFileSync(path.join(dir, f), "utf-8"));
   }
   tablesReady = true;
@@ -47,11 +47,44 @@ async function nextWorkNo() {
   return `JOB-${by}-${String(seq).padStart(4, "0")}`;
 }
 
-// GET /api/work-orders/next-no — ให้หน้าจอเอาไปโชว์เลขถัดไปก่อนกดบันทึก
+// ── รหัสงานสั่งทำ CUSTOM#00834 ──
+// รันจากเลขท้ายสุดที่เคยใช้ ไม่ผูกกับปี เพราะร้านนับต่อเนื่องมาตลอด
+const JOB_PREFIX = "CUSTOM#";
+async function nextJobCode(offset = 0) {
+  const { rows } = await pool.query(
+    `SELECT job_code FROM work_order_items
+      WHERE job_code LIKE $1
+      ORDER BY NULLIF(regexp_replace(job_code, '\\D', '', 'g'), '')::bigint DESC NULLS LAST
+      LIMIT 1`,
+    [`${JOB_PREFIX}%`]
+  );
+  let seq = 1;
+  if (rows[0]) seq = (parseInt(String(rows[0].job_code).replace(/\D/g, ""), 10) || 0) + 1;
+  return `${JOB_PREFIX}${String(seq + offset).padStart(5, "0")}`;
+}
+
+// ชื่อที่จะไปขึ้นเป็น "ผู้รับออเดอร์" — ดึงจากคนที่ล็อกอิน ไม่ให้พิมพ์เอง
+async function loginName(req) {
+  if (!req.user?.id) return null;
+  try {
+    const { rows } = await pool.query(
+      "SELECT COALESCE(NULLIF(nickname,''), full_name) AS name FROM users WHERE id = $1",
+      [req.user.id]
+    );
+    return rows[0]?.name || null;
+  } catch (_) { return null; }
+}
+
+// GET /api/work-orders/next-no — หน้าจอเอาไปโชว์รหัสถัดไปก่อนกดบันทึก
 async function peekNextWorkNo(req, res) {
   try {
     await ensureTables();
-    res.json({ work_no: await nextWorkNo(), prefix: `JOB-${thaiYear()}-` });
+    res.json({
+      work_no: await nextWorkNo(),
+      prefix: JOB_PREFIX,
+      job_code: await nextJobCode(),
+      received_by: await loginName(req),
+    });
   } catch (err) {
     res.status(500).json({ error: "ไม่สามารถอ่านเลขที่ถัดไปได้", detail: err.message });
   }
@@ -110,7 +143,9 @@ async function listWorkOrders(req, res) {
     await ensureTables();
     const { rows } = await pool.query(
       `SELECT wo.*, COALESCE(c.full_name, wo.customer_name) AS customer_name,
-              (SELECT COUNT(*) FROM work_order_items i WHERE i.work_order_id = wo.id) AS item_count
+              (SELECT COUNT(*) FROM work_order_items i WHERE i.work_order_id = wo.id) AS item_count,
+              (SELECT i.job_code FROM work_order_items i
+                WHERE i.work_order_id = wo.id ORDER BY i.line_no LIMIT 1) AS first_job_code
          FROM work_orders wo
          LEFT JOIN customers c ON c.id = wo.customer_id
         ORDER BY wo.created_at DESC`
@@ -147,114 +182,130 @@ async function getWorkOrder(req, res) {
   }
 }
 
-// ── แปลง body ของฟอร์มใหม่ให้เป็นค่าที่พร้อมลงตาราง ──
-// 1 ใบ = 1 งาน แต่ยังเขียน work_order_items 1 แถวไว้ด้วย
-// เพราะปุ่ม "เพิ่มเข้าสต๊อก" ทำงานกับตารางนั้น และคอลัมน์เก่ายังต้องมีที่อยู่
-function jobFields(b = {}) {
-  const qty = Math.max(1, parseInt(b.job_qty, 10) || 1);
-  const price = num(b.price);
-  const stones = (Array.isArray(b.stones) ? b.stones : []).filter(
-    (st) => st && (st.shape || st.carat || st.cert_no)
-  ).map((st) => ({
-    shape: st.shape || "",
-    color: st.color || "",      // สีเพชร D–M / Fancy
-    clarity: st.clarity || "",  // ความสะอาด FL–I3
-    carat: num(st.carat),
-    qty: Math.max(1, parseInt(st.qty, 10) || 1),
-    has_cert: !!st.has_cert,
-    cert_no: st.cert_no || "",
+// ── แปลง body เป็นค่าที่พร้อมลงตาราง ──
+// ระดับใบเก็บแค่ลูกค้า วันที่ เงิน · รายละเอียดงานอยู่ที่ items
+const cleanStones = (list) =>
+  (Array.isArray(list) ? list : [])
+    .filter((st) => st && (st.shape || st.carat || st.cert_no))
+    .map((st) => ({
+      shape: st.shape || "",
+      color: st.color || "",
+      clarity: st.clarity || "",
+      carat: num(st.carat),
+      qty: Math.max(1, parseInt(st.qty, 10) || 1),
+      has_cert: !!st.has_cert,
+      cert_no: st.cert_no || "",
+    }));
+
+function cleanItems(list) {
+  return (Array.isArray(list) ? list : []).map((it, i) => ({
+    line_no: i + 1,
+    job_code: (it.job_code || "").trim() || null,
+    job_type: it.job_type || null,
+    name: it.job_type || it.name || "งานสั่งทำ",
+    metal_color: it.metal_color || null,
+    metal_type: it.metal_type || null,
+    unit_weight_g: num(it.unit_weight_g) || null,   // น้ำหนักทอง (กรัม)
+    qty: Math.max(1, parseInt(it.qty, 10) || 1),
+    ring_size: it.ring_size || null,
+    engrave: it.engrave || null,
+    note: it.note || null,
+    price: num(it.price),
+    photos: (Array.isArray(it.photos) ? it.photos : []).filter(Boolean).slice(0, 4),
+    stones: cleanStones(it.stones),
+    photo_url: (Array.isArray(it.photos) ? it.photos : []).filter(Boolean)[0] || null,
   }));
-  const photos = (Array.isArray(b.photos) ? b.photos : []).filter(Boolean).slice(0, 4);
+}
+
+function headFields(b = {}, items = [], receivedBy = null) {
+  const payments = (Array.isArray(b.payments) ? b.payments : [])
+    .map((p) => ({ amount: num(p?.amount ?? p), note: (p?.note || "").toString() }))
+    .filter((p) => p.amount > 0);
+  const grand = items.reduce((sum, it) => sum + num(it.price), 0);
+  const paid = payments.reduce((sum, p) => sum + p.amount, 0);
   return {
     customer_id: b.customer_id || null,
     customer_name: b.customer_name || null,
     customer_phone: b.customer_phone || null,
-    job_type: b.job_type || null,
-    job_qty: qty,
-    workshop: b.workshop || null,
-    ordered_at: b.ordered_at || null,      // วันที่รับงาน
-    due_date: b.due_date || null,          // วันที่ส่งงาน
-    metal_color: b.metal_color || null,
-    metal_type: b.metal_type || null,
-    ring_size: b.ring_size || null,
-    engrave: b.engrave || null,
+    ordered_at: b.ordered_at || null,
+    due_date: b.due_date || null,
     job_note: b.job_note || null,
-    stones,
-    photos,
-    price,
-    deposit: num(b.deposit),
-    grand_total: round2(price * qty),
-    received_by: b.received_by || null,
     is_urgent: !!b.is_urgent,
-    quotation_ref: b.quotation_ref || null,
+    payments,
+    paid_total: round2(paid),
+    grand_total: round2(grand),
+    job_qty: items.reduce((sum, it) => sum + it.qty, 0),
+    received_by: receivedBy,          // มาจากคนล็อกอินเสมอ ไม่รับจาก body
   };
 }
 
-// เขียน/เขียนทับรายการเดียวของใบ — ให้ระบบเพิ่มเข้าสต๊อกยังใช้ได้เหมือนเดิม
-async function writeSingleItem(client, orderId, f) {
-  const existing = await client.query(
-    "SELECT id, stocked_product_id FROM work_order_items WHERE work_order_id = $1 ORDER BY line_no LIMIT 1",
+const HEAD_COLS = `customer_id, customer_name, customer_phone, ordered_at, due_date,
+  job_note, is_urgent, payments, paid_total, grand_total, job_qty, received_by`;
+const headValues = (f) => [
+  f.customer_id, f.customer_name, f.customer_phone, f.ordered_at, f.due_date,
+  f.job_note, f.is_urgent, JSON.stringify(f.payments), f.paid_total, f.grand_total,
+  f.job_qty, f.received_by,
+];
+
+// เขียนรายการงานทั้งหมดใหม่ — เก็บ stocked_product_id ของเดิมไว้ กันเพิ่มเข้าสต๊อกซ้ำ
+async function writeItems(client, orderId, items) {
+  const prev = await client.query(
+    "SELECT job_code, stocked_product_id FROM work_order_items WHERE work_order_id = $1 AND stocked_product_id IS NOT NULL",
     [orderId]
   );
-  const vals = [
-    f.job_type || "งานสั่งทำ", f.photos[0] || null, f.metal_type, f.metal_color,
-    f.job_qty, f.ring_size, f.job_note, JSON.stringify(f.stones),
-  ];
-  if (existing.rows[0]) {
-    await client.query(
-      `UPDATE work_order_items
-          SET name=$1, photo_url=$2, metal_type=$3, metal_color=$4,
-              qty=$5, ring_size=$6, note=$7, stones=$8
-        WHERE id=$9`,
-      [...vals, existing.rows[0].id]
-    );
-  } else {
+  const stocked = new Map(prev.rows.map((r) => [r.job_code, r.stocked_product_id]));
+
+  await client.query("DELETE FROM work_order_items WHERE work_order_id = $1", [orderId]);
+  for (const it of items) {
     await client.query(
       `INSERT INTO work_order_items
-        (work_order_id, line_no, name, photo_url, metal_type, metal_color, qty, ring_size, note, stones)
-       VALUES ($1,1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [orderId, ...vals]
+        (work_order_id, line_no, job_code, job_type, name, photo_url, photos,
+         metal_type, metal_color, unit_weight_g, qty, ring_size, engrave,
+         note, price, stones, stocked_product_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      [orderId, it.line_no, it.job_code, it.job_type, it.name, it.photo_url,
+       JSON.stringify(it.photos), it.metal_type, it.metal_color, it.unit_weight_g,
+       it.qty, it.ring_size, it.engrave, it.note, it.price, JSON.stringify(it.stones),
+       stocked.get(it.job_code) || null]
     );
   }
 }
 
-const JOB_COLS = `customer_id, customer_name, customer_phone, job_type, job_qty, workshop,
-  ordered_at, due_date, metal_color, metal_type, ring_size, engrave, job_note,
-  stones, photos, price, deposit, grand_total, received_by, is_urgent, quotation_ref`;
-const jobValues = (f) => [
-  f.customer_id, f.customer_name, f.customer_phone, f.job_type, f.job_qty, f.workshop,
-  f.ordered_at, f.due_date, f.metal_color, f.metal_type, f.ring_size, f.engrave, f.job_note,
-  JSON.stringify(f.stones), JSON.stringify(f.photos), f.price, f.deposit, f.grand_total,
-  f.received_by, f.is_urgent, f.quotation_ref,
-];
+// เติมรหัสงานให้รายการที่ยังไม่มี — ไล่ต่อจากเลขล่าสุดทีละใบ
+async function fillJobCodes(items) {
+  let offset = 0;
+  for (const it of items) {
+    if (!it.job_code) { it.job_code = await nextJobCode(offset); offset += 1; }
+  }
+  return items;
+}
 
 // POST /api/work-orders
 async function createWorkOrder(req, res) {
   const client = await pool.connect();
   try {
     await ensureTables();
-    const f = jobFields(req.body);
-    // พิมพ์เลขเองมาก็ใช้เลขนั้น ไม่ได้พิมพ์มาก็รันต่อให้
+    const items = await fillJobCodes(cleanItems(req.body.items));
+    if (items.length === 0) return res.status(400).json({ error: "ต้องมีงานอย่างน้อย 1 ชิ้น" });
+    const f = headFields(req.body, items, await loginName(req));
     const workNo = (req.body.work_no || "").trim() || (await nextWorkNo());
 
     await client.query("BEGIN");
     const { rows } = await client.query(
-      `INSERT INTO work_orders (work_no, ${JOB_COLS}, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'ordered',$23)
+      `INSERT INTO work_orders (work_no, ${HEAD_COLS}, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ordered',$14)
        RETURNING *`,
-      [workNo, ...jobValues(f), req.user?.id || null]
+      [workNo, ...headValues(f), req.user?.id || null]
     );
     const order = rows[0];
-    await writeSingleItem(client, order.id, f);
+    await writeItems(client, order.id, items);
     await client.query("COMMIT");
 
-    const items = await pool.query("SELECT * FROM work_order_items WHERE work_order_id = $1 ORDER BY line_no", [order.id]);
-    res.status(201).json({ ...order, items: items.rows.map(withItemTotals) });
+    const full = await pool.query("SELECT * FROM work_order_items WHERE work_order_id = $1 ORDER BY line_no", [order.id]);
+    res.status(201).json({ ...order, items: full.rows.map(withItemTotals) });
   } catch (err) {
     await client.query("ROLLBACK");
-    if (err.code === "23505") {
-      return res.status(409).json({ error: "รหัสงานสั่งทำนี้ถูกใช้ไปแล้ว กรุณาเปลี่ยนเลข" });
-    }
+    if (err.code === "23505") return res.status(409).json({ error: "รหัสงานนี้ถูกใช้ไปแล้ว กรุณาเปลี่ยนเลข" });
     console.error(err);
     res.status(500).json({ error: "ไม่สามารถสร้างใบสั่งทำได้", detail: err.message });
   } finally {
@@ -262,34 +313,31 @@ async function createWorkOrder(req, res) {
   }
 }
 
-// PUT /api/work-orders/:id — แก้ไขใบที่บันทึกไปแล้ว แก้ได้ไม่จำกัดครั้ง
+// PUT /api/work-orders/:id
 async function updateWorkOrder(req, res) {
   const client = await pool.connect();
   try {
     await ensureTables();
-    const f = jobFields(req.body);
-    const workNo = (req.body.work_no || "").trim();
+    const items = await fillJobCodes(cleanItems(req.body.items));
+    if (items.length === 0) return res.status(400).json({ error: "ต้องมีงานอย่างน้อย 1 ชิ้น" });
+    const f = headFields(req.body, items, await loginName(req));
 
     await client.query("BEGIN");
-    const sets = JOB_COLS.split(",").map((c) => c.trim()).filter(Boolean)
+    const sets = HEAD_COLS.split(",").map((c) => c.trim()).filter(Boolean)
       .map((c, i) => `${c} = $${i + 2}`).join(", ");
-    const params = [req.params.id, ...jobValues(f)];
-    let sql = `UPDATE work_orders SET ${sets}, updated_at = NOW()`;
-    if (workNo) { params.push(workNo); sql += `, work_no = $${params.length}`; }
-    sql += " WHERE id = $1 RETURNING *";
-
-    const { rows } = await client.query(sql, params);
+    const { rows } = await client.query(
+      `UPDATE work_orders SET ${sets}, updated_at = NOW() WHERE id = $1 RETURNING *`,
+      [req.params.id, ...headValues(f)]
+    );
     if (!rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({ error: "ไม่พบใบสั่งทำ" }); }
-    await writeSingleItem(client, rows[0].id, f);
+    await writeItems(client, rows[0].id, items);
     await client.query("COMMIT");
 
-    const items = await pool.query("SELECT * FROM work_order_items WHERE work_order_id = $1 ORDER BY line_no", [rows[0].id]);
-    res.json({ ...rows[0], items: items.rows.map(withItemTotals) });
+    const full = await pool.query("SELECT * FROM work_order_items WHERE work_order_id = $1 ORDER BY line_no", [rows[0].id]);
+    res.json({ ...rows[0], items: full.rows.map(withItemTotals) });
   } catch (err) {
     await client.query("ROLLBACK");
-    if (err.code === "23505") {
-      return res.status(409).json({ error: "รหัสงานสั่งทำนี้ถูกใช้ไปแล้ว กรุณาเปลี่ยนเลข" });
-    }
+    if (err.code === "23505") return res.status(409).json({ error: "รหัสงานนี้ถูกใช้ไปแล้ว กรุณาเปลี่ยนเลข" });
     console.error(err);
     res.status(500).json({ error: "ไม่สามารถแก้ไขใบสั่งทำได้", detail: err.message });
   } finally {
@@ -332,6 +380,23 @@ async function deleteWorkOrder(req, res) {
   }
 }
 
+// ── รหัสสินค้าในสต๊อก ANAKYN#0029 — รันต่อจากเลขล่าสุดในตาราง products ──
+async function nextProductSku() {
+  const { rows } = await pool.query(
+    `SELECT sku FROM products WHERE sku LIKE 'ANAKYN#%'
+      ORDER BY NULLIF(regexp_replace(sku, '\\D', '', 'g'), '')::bigint DESC NULLS LAST LIMIT 1`
+  );
+  let seq = 1;
+  if (rows[0]) seq = (parseInt(String(rows[0].sku).replace(/\D/g, ""), 10) || 0) + 1;
+  return `ANAKYN#${String(seq).padStart(4, "0")}`;
+}
+
+// GET /api/work-orders/next-sku — หน้าจอเอาไปเติมให้ตอนกดเพิ่มเข้าสต๊อก
+async function peekNextSku(req, res) {
+  try { res.json({ sku: await nextProductSku() }); }
+  catch (err) { res.status(500).json({ error: "อ่านรหัสสินค้าถัดไปไม่ได้", detail: err.message }); }
+}
+
 // ── POST /api/work-orders/:id/items/:itemId/to-stock ──
 // สร้างสินค้าในสต๊อกจากรายการงานที่ทำเสร็จแล้ว
 // กันกดซ้ำด้วย stocked_product_id — กดสองครั้งจะได้สินค้าตัวเดิม ไม่ใช่สองตัว
@@ -355,7 +420,9 @@ async function workItemToStock(req, res) {
       return res.status(200).json({ already: true, product: existing.rows[0] || null });
     }
 
-    if (!sku) { await client.query("ROLLBACK"); return res.status(400).json({ error: "กรุณาระบุรหัสสินค้า (SKU)" }); }
+    // รหัสสินค้าเป็นคนละชุดกับรหัสงาน — ไม่ใส่มาก็รันต่อจากเลขล่าสุดให้
+    const useSku = (sku || "").trim() || (await nextProductSku());
+    if (!useSku) { await client.query("ROLLBACK"); return res.status(400).json({ error: "กรุณาระบุรหัสสินค้า (SKU)" }); }
 
     const stones = typeof it.stones === "string" ? safeJson(it.stones) : (it.stones || []);
     const t = itemTotals({ ...it, stones });
@@ -378,7 +445,7 @@ async function workItemToStock(req, res) {
          has_certificate, certificate_no, cost_price, sale_price, stock_qty, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        RETURNING *`,
-      [sku, it.name, "other", it.photo_url || null, it.metal_type || null,
+      [useSku, it.name, "other", it.photo_url || null, it.metal_type || null,
        unitMetal, round2(unitMetal * 1.1),
        0, num(it.labor_cost), JSON.stringify(diamonds), 0,
        diamonds.some((d) => d.hasCert), diamonds.find((d) => d.certNo)?.certNo || null,
@@ -401,5 +468,5 @@ async function workItemToStock(req, res) {
 
 module.exports = {
   listWorkOrders, getWorkOrder, createWorkOrder, updateWorkOrder,
-  peekNextWorkNo, updateWorkOrderStatus, deleteWorkOrder, workItemToStock,
+  peekNextWorkNo, peekNextSku, updateWorkOrderStatus, deleteWorkOrder, workItemToStock,
 };

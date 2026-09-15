@@ -3,12 +3,13 @@ const router = express.Router();
 const { requireAuth, requireRole } = require("../middleware/auth");
 const {
   listWorkOrders, getWorkOrder, createWorkOrder, updateWorkOrder,
-  peekNextWorkNo, updateWorkOrderStatus, deleteWorkOrder, workItemToStock,
+  peekNextWorkNo, peekNextSku, updateWorkOrderStatus, deleteWorkOrder, workItemToStock,
 } = require("../controllers/workOrderController");
 
 router.get("/", requireAuth, listWorkOrders);
 // ต้องมาก่อน "/:id" ไม่งั้น next-no จะถูกจับเป็น id
 router.get("/next-no", requireAuth, peekNextWorkNo);
+router.get("/next-sku", requireAuth, peekNextSku);
 router.get("/:id", requireAuth, getWorkOrder);
 router.post("/", requireAuth, requireRole("admin", "staff"), createWorkOrder);
 router.put("/:id", requireAuth, requireRole("admin", "staff"), updateWorkOrder);
