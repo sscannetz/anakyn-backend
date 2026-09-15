@@ -2,7 +2,7 @@
 // invoiceController.js — ใบกำกับภาษี (ออกจากการขายที่มีอยู่)
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
-const { nextDocNumber } = require("../utils/docNumber");
+const { nextHashNumber } = require("../utils/docNumber");
 
 // ── แปลงเป็นตัวเลขแบบปลอดภัย: คืน null ถ้าไม่ใช่ตัวเลขจริง (รวมถึงค่า NaN ที่ Postgres NUMERIC เก็บได้) ──
 function toNum(v) {
@@ -84,7 +84,7 @@ async function createInvoice(req, res) {
     const vatAmt   = vat_applied ? Math.round(taxBase * rate / 100 * 100) / 100 : 0;
     const grand    = taxBase + vatAmt;
     const netPayable = grand - whtVal;
-    const invoiceNo = await nextDocNumber("invoices", "invoice_no", "INV");
+    const invoiceNo = await nextHashNumber("invoices", "invoice_no", "INV");
 
     const { rows } = await pool.query(
       `INSERT INTO invoices

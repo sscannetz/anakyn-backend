@@ -2,7 +2,7 @@
 // receiptController.js — ใบเสร็จรับเงิน (ออกจากการขายที่มีอยู่)
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
-const { nextDocNumber } = require("../utils/docNumber");
+const { nextHashNumber } = require("../utils/docNumber");
 
 // ── แปลงเป็นตัวเลขแบบปลอดภัย (กัน NaN ที่ Postgres NUMERIC เก็บได้) ──
 function toNum(v) {
@@ -66,7 +66,7 @@ async function createReceipt(req, res) {
     if (!sale.rows[0]) return res.status(404).json({ error: "ไม่พบรายการขายนี้" });
 
     const amt = toNum(amount) ?? toNum(sale.rows[0].total) ?? 0;
-    const receiptNo = await nextDocNumber("receipts", "receipt_no", "RCP");
+    const receiptNo = await nextHashNumber("receipts", "receipt_no", "Receipt");
 
     const { rows } = await pool.query(
       `INSERT INTO receipts (receipt_no, sale_id, amount, payment_method, note, issued_by)

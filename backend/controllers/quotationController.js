@@ -2,7 +2,7 @@
 // quotationController.js — ใบเสนอราคา
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
-const { nextDocNumber } = require("../utils/docNumber");
+const { nextHashNumber } = require("../utils/docNumber");
 
 // ── แปลงเป็นตัวเลขแบบปลอดภัย: คืน null ถ้าไม่ใช่ตัวเลขจริง (รวมถึงค่า NaN ที่ Postgres NUMERIC เก็บได้) ──
 function toNum(v) {
@@ -65,7 +65,7 @@ async function createQuotation(req, res) {
     const vatAmount = vat_enabled ? Math.round(subtotal * rate / 100) : 0;
     const total = subtotal + vatAmount;
 
-    const quoteNo = await nextDocNumber("quotations", "quote_no", "QT");
+    const quoteNo = await nextHashNumber("quotations", "quote_no", "QT");
     const validUntil = new Date();
     validUntil.setDate(validUntil.getDate() + valid_days);
 

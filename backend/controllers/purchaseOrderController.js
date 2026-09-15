@@ -2,7 +2,7 @@
 // purchaseOrderController.js — ใบสั่งซื้อ (PO)
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
-const { nextDocNumber } = require("../utils/docNumber");
+const { nextHashNumber } = require("../utils/docNumber");
 
 async function listPOs(req, res) {
   try {
@@ -47,7 +47,7 @@ async function createPO(req, res) {
     const subtotal = items.reduce((sum, it) => sum + it.unit_price * it.qty, 0);
     const vatAmount = vat_enabled ? Math.round(subtotal * 0.07) : 0;
     const total = subtotal + vatAmount;
-    const poNo = await nextDocNumber("purchase_orders", "po_no", "PO");
+    const poNo = await nextHashNumber("purchase_orders", "po_no", "PO");
 
     const poResult = await client.query(
       `INSERT INTO purchase_orders (po_no, supplier_id, subtotal, vat_amount, total, needed_by, approved_by, status)

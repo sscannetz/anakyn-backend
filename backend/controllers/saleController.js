@@ -2,7 +2,7 @@
 // saleController.js — บันทึกการขาย (ตัดสต๊อก + สร้างค่าคอม Partner อัตโนมัติ)
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
-const { nextDocNumber } = require("../utils/docNumber");
+const { nextHashNumber } = require("../utils/docNumber");
 
 // GET /api/sales?limit=20
 async function listSales(req, res) {
@@ -83,7 +83,7 @@ async function createSale(req, res) {
     const vatAmount = vat_enabled ? Math.round(afterDiscount * 0.07) : 0;
     const total = afterDiscount + vatAmount;
 
-    const saleNo = await nextDocNumber("sales", "sale_no", "SALE");
+    const saleNo = await nextHashNumber("sales", "sale_no", "Sale");
 
     const saleResult = await client.query(
       `INSERT INTO sales
