@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
 const { nextHashNumber } = require("../utils/docNumber");
+const { ensureSaleItemColumns } = require("../utils/saleItemColumns");
 
 // GET /api/sales?limit=20
 async function listSales(req, res) {
@@ -54,6 +55,9 @@ async function createSale(req, res) {
     return res.status(400).json({ error: "กรุณาเพิ่มสินค้าอย่างน้อย 1 รายการ" });
   }
 
+  // สร้างคอลัมน์ที่ใช้คิดกำไรให้พร้อมก่อน (ทำนอก transaction ของการขาย)
+  const hasProfitCols = await ensureSaleItemColumns();
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -83,6 +87,24 @@ async function createSale(req, res) {
     const vatAmount = vat_enabled ? Math.round(afterDiscount * 0.07) : 0;
     const total = afterDiscount + vatAmount;
 
+    // ── ปันส่วนลดลงรายชิ้นตามสัดส่วนราคา ────────────────────────
+    // ส่วนลดถูกกรอกที่ระดับบิล แต่กำไรต้องคิดรายชิ้น ถ้าไม่ปันลงมา
+    // หน้าสรุปจะบวกกำไรจากราคาเต็ม → กำไรเกินจริงเท่ากับส่วนลดพอดี
+    //
+    // เศษทศนิยมยกให้รายการสุดท้าย ผลรวมจะเท่ากับ afterDiscount เป๊ะเสมอ
+    // ไม่งั้นปัดทีละบรรทัดแล้วรวมกันจะขาด/เกินไม่กี่สตางค์ แต่พอสะสมหลายบิลจะเพี้ยน
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const grossLines = items.map((it) => it.unit_price * it.qty);
+    // กันส่วนลดเกินราคารวม (จะทำให้ราคาสุทธิติดลบ)
+    const discTotal = Math.min(Math.max(0, vip_discount + extra_discount), subtotal);
+    let discLeft = discTotal;
+    const lineDisc = grossLines.map((g, i) => {
+      if (i === grossLines.length - 1) return r2(discLeft);
+      const d = subtotal > 0 ? r2(discTotal * g / subtotal) : 0;
+      discLeft = r2(discLeft - d);
+      return d;
+    });
+
     const saleNo = await nextHashNumber("sales", "sale_no", "Sale");
 
     const saleResult = await client.query(
@@ -97,20 +119,37 @@ async function createSale(req, res) {
     const sale = saleResult.rows[0];
 
     // เพิ่ม sale_items + หักสต๊อก
-    for (const it of items) {
-      await client.query(
-        `INSERT INTO sale_items (sale_id, product_id, qty, unit_price, line_total)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [sale.id, it.product_id, it.qty, it.unit_price, it.unit_price * it.qty]
-      );
+    // ★ หักสต๊อกก่อน INSERT เพราะคำสั่งเดียวกันคืนต้นทุน ณ วินาทีนี้มาด้วย
+    //   (ต้นทุนต้องล็อกไว้ ไม่งั้นแก้ต้นทุนสินค้าทีหลัง กำไรบิลเก่าจะเปลี่ยนย้อนหลัง)
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
 
       const stockResult = await client.query(
         `UPDATE products SET stock_qty = stock_qty - $1
-         WHERE id = $2 AND stock_qty >= $1 RETURNING stock_qty`,
+         WHERE id = $2 AND stock_qty >= $1 RETURNING stock_qty, cost_price`,
         [it.qty, it.product_id]
       );
       if (stockResult.rowCount === 0) {
         throw new Error(`สต๊อกสินค้าไม่พอ (product_id: ${it.product_id})`);
+      }
+      const costAtSale = stockResult.rows[0].cost_price;
+      const gross = it.unit_price * it.qty;
+
+      if (hasProfitCols) {
+        await client.query(
+          `INSERT INTO sale_items
+             (sale_id, product_id, qty, unit_price, line_total, line_discount, line_net, cost_at_sale)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [sale.id, it.product_id, it.qty, it.unit_price, gross,
+           lineDisc[i], r2(gross - lineDisc[i]), costAtSale]
+        );
+      } else {
+        // คอลัมน์ใหม่ยังสร้างไม่สำเร็จ — บันทึกขายต้องไปต่อได้ ห้ามพังทั้งบิล
+        await client.query(
+          `INSERT INTO sale_items (sale_id, product_id, qty, unit_price, line_total)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [sale.id, it.product_id, it.qty, it.unit_price, gross]
+        );
       }
       // ถ้าสต๊อกหมด → ตั้ง is_available = false
       await client.query(

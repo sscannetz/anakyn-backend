@@ -2,12 +2,22 @@
 // summaryController.js — สรุปยอดสำหรับหน้า Summary / Home Dashboard
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
+const { ensureSaleItemColumns } = require("../utils/saleItemColumns");
 
 // GET /api/summary?period=month   (period: today|week|month|year)
 async function getSummary(req, res) {
   const period = req.query.period || "month";
   const intervalMap = { today: "1 day", week: "7 days", month: "1 month", year: "1 year" };
   const interval = intervalMap[period] || "1 month";
+
+  // ── ยอดที่ใช้คิดกำไร ─────────────────────────────────────────
+  // line_net     = ราคาหลังหักส่วนลดที่ปันลงรายชิ้นแล้ว (ถ้าไม่ปัน กำไรจะเกินจริง)
+  // cost_at_sale = ต้นทุน ณ วันขาย (ถ้าไปดึงจาก products กำไรบิลเก่าจะเปลี่ยนย้อนหลัง
+  //                เมื่อมีการแก้ต้นทุนสินค้า เช่นตอนราคาทองขึ้น)
+  // ถ้าคอลัมน์ยังสร้างไม่สำเร็จ ถอยไปใช้สูตรเดิม — รายงานต้องขึ้นเสมอ ห้ามพังทั้งหน้า
+  const hasProfitCols = await ensureSaleItemColumns();
+  const NET  = hasProfitCols ? "COALESCE(si.line_net, si.line_total)"     : "si.line_total";
+  const COST = hasProfitCols ? "COALESCE(si.cost_at_sale, p.cost_price)"  : "p.cost_price";
 
   try {
     const sales = await pool.query(
@@ -41,9 +51,9 @@ async function getSummary(req, res) {
     );
 
     const profitEstimate = await pool.query(
-      `SELECT COALESCE(SUM(si.line_total - p.cost_price * si.qty), 0) AS profit
+      `SELECT COALESCE(SUM(${NET} - ${COST} * si.qty), 0) AS profit
        FROM sale_items si
-       JOIN products p ON p.id = si.product_id
+       LEFT JOIN products p ON p.id = si.product_id
        JOIN sales s ON s.id = si.sale_id
        WHERE s.sold_at >= now() - $1::interval AND s.status = 'completed'`,
       [interval]
@@ -51,7 +61,7 @@ async function getSummary(req, res) {
 
     // สินค้าขายดี (top 5 ตามยอดขายรวมในช่วงเวลานี้)
     const topItems = await pool.query(
-      `SELECT p.name, p.sku, SUM(si.qty) AS qty, SUM(si.line_total) AS amount
+      `SELECT p.name, p.sku, SUM(si.qty) AS qty, SUM(${NET}) AS amount
        FROM sale_items si
        JOIN products p ON p.id = si.product_id
        JOIN sales s ON s.id = si.sale_id
