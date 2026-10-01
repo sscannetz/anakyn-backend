@@ -17,7 +17,31 @@ async function listSales(req, res) {
        ORDER BY s.sold_at DESC LIMIT $1`,
       [limit]
     );
-    res.json(rows);
+
+    // แนบรายการสินค้าของแต่ละบิลมาด้วย — หน้าหลักเอาไปแตกเป็นบรรทัดละสินค้า
+    // ดึงทีเดียวด้วย ANY(...) ไม่วนยิงทีละบิล (20 บิล = 20 คิวรี)
+    const ids = rows.map(r => r.id);
+    const itemsBySale = {};
+    if (ids.length) {
+      const hasProfitCols = await ensureSaleItemColumns();
+      const NET = hasProfitCols ? "COALESCE(si.line_net, si.line_total)" : "si.line_total";
+      const its = await pool.query(
+        `SELECT si.id, si.sale_id, si.qty, si.unit_price, ${NET} AS amount, p.name, p.sku
+         FROM sale_items si
+         JOIN products p ON p.id = si.product_id
+         WHERE si.sale_id = ANY($1::uuid[])
+         ORDER BY p.name`,
+        [ids]
+      );
+      for (const r of its.rows) {
+        (itemsBySale[r.sale_id] = itemsBySale[r.sale_id] || []).push({
+          id: r.id, name: r.name, sku: r.sku,
+          qty: Number(r.qty), unit_price: Number(r.unit_price), amount: Number(r.amount),
+        });
+      }
+    }
+
+    res.json(rows.map(r => ({ ...r, items: itemsBySale[r.id] || [] })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "ไม่สามารถโหลดรายการขายได้" });

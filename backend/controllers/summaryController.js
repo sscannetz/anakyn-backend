@@ -107,6 +107,18 @@ async function getSummary(req, res) {
       params
     );
 
+    // รายบรรทัดขาย — 1 บรรทัด = สินค้า 1 รายการในบิล 1 ใบ (เลขที่บิลซ้ำกันได้)
+    // หน้าสรุปรายงานเอาไปโชว์แยกบรรทัด ไม่รวมยอดข้ามบิลแล้ว
+    const saleLines = await pool.query(
+      `SELECT s.sale_no, s.sold_at, p.name, p.sku, si.qty, ${NET} AS amount
+       FROM sale_items si
+       JOIN products p ON p.id = si.product_id
+       JOIN sales s ON s.id = si.sale_id
+       WHERE ${inRange("s.sold_at")} AND s.status = 'completed'
+       ORDER BY amount DESC`,
+      params
+    );
+
     // สัดส่วนช่องทางชำระเงิน (payment_methods เป็น JSONB array [{method,amount}])
     const paymentRows = await pool.query(
       `SELECT payment_methods FROM sales
@@ -157,6 +169,10 @@ async function getSummary(req, res) {
       profit_incl_vat: Number(profitEstimate.rows[0].profit) + Number(sales.rows[0].vat_collected),
       top_items: topItems.rows.map(r => ({ name: r.name, sku: r.sku, qty: Number(r.qty), amount: Number(r.amount) })),
       sales_items: salesItems.rows.map(r => ({ name: r.name, sku: r.sku, qty: Number(r.qty), amount: Number(r.amount) })),
+      sale_lines: saleLines.rows.map(r => ({
+        sale_no: r.sale_no, sold_at: r.sold_at, name: r.name, sku: r.sku,
+        qty: Number(r.qty), amount: Number(r.amount),
+      })),
       payment_breakdown: paymentTotals,
       daily_chart: dailyChart.rows.map(r => ({ day: r.day, total: Number(r.total) })),
     });
