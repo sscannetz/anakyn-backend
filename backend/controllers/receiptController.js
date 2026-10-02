@@ -13,13 +13,21 @@ function toNum(v) {
 // ── sanitize: กัน NaN + alias grand_total ให้แอป Expo อ่านได้เหมือนเอกสารอื่น ──
 function sanitizeReceipt(row) {
   const amount = toNum(row.amount) ?? toNum(row.total) ?? 0;
-  return { ...row, amount, grand_total: amount, total: amount };
+  // ส่วนลดมาจากบิลขาย (NUMERIC ของ pg ส่งมาเป็น string) — แปลงเป็นตัวเลขให้ใบเสร็จเอาไปโชว์
+  return {
+    ...row, amount, grand_total: amount, total: amount,
+    subtotal:       toNum(row.subtotal) ?? 0,
+    vip_discount:   toNum(row.vip_discount) ?? 0,
+    extra_discount: toNum(row.extra_discount) ?? 0,
+    vat_amount:     toNum(row.vat_amount) ?? 0,
+  };
 }
 
 async function listReceipts(req, res) {
   try {
     const { rows } = await pool.query(
-      `SELECT r.*, s.sale_no, s.total, c.full_name AS customer_name
+      `SELECT r.*, s.sale_no, s.total, s.subtotal, s.vip_discount, s.extra_discount, s.vat_amount,
+              c.full_name AS customer_name
        FROM receipts r
        LEFT JOIN sales s ON s.id = r.sale_id
        LEFT JOIN customers c ON c.id = s.customer_id
@@ -34,7 +42,8 @@ async function listReceipts(req, res) {
 async function getReceipt(req, res) {
   try {
     const { rows } = await pool.query(
-      `SELECT r.*, s.sale_no, s.total, c.full_name AS customer_name, c.phone
+      `SELECT r.*, s.sale_no, s.total, s.subtotal, s.vip_discount, s.extra_discount, s.vat_amount,
+              c.full_name AS customer_name, c.phone
        FROM receipts r
        LEFT JOIN sales s ON s.id = r.sale_id
        LEFT JOIN customers c ON c.id = s.customer_id
@@ -73,7 +82,13 @@ async function createReceipt(req, res) {
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
       [receiptNo, sale_id, amt, payment_method, note, req.user.id]
     );
-    res.status(201).json(sanitizeReceipt({ ...rows[0], sale_no: sale.rows[0].sale_no }));
+    // ส่งส่วนลด/ยอดก่อนส่วนลดของบิลกลับไปด้วย เผื่อหน้าจอสั่งปริ้นต่อทันทีโดยไม่ได้โหลดใบเสร็จใหม่
+    const sl = sale.rows[0];
+    res.status(201).json(sanitizeReceipt({
+      ...rows[0], sale_no: sl.sale_no,
+      subtotal: sl.subtotal, vip_discount: sl.vip_discount,
+      extra_discount: sl.extra_discount, vat_amount: sl.vat_amount,
+    }));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "ไม่สามารถออกใบเสร็จได้" });
