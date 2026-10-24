@@ -40,6 +40,8 @@ app.use(morgan("dev"));
 
 // ── Routes ──
 app.use("/api/auth",            require("./routes/auth"));
+// แคตตาล็อกสาธารณะของเว็บร้าน (otw2you) — ไม่ต้องล็อกอิน ส่งเฉพาะสินค้าที่ติ๊ก Show in catalog
+app.use("/api/public",          require("./routes/public"));
 app.use("/api/products",        require("./routes/products"));
 app.use("/api/sales",           require("./routes/sales"));
 app.use("/api/invoices",        require("./routes/invoices"));
