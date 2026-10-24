@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════
 const pool = require("../config/db");
 const { ensureProductPhotosColumn } = require("../utils/productPhotosColumn");
+const { ensureProductPublishedColumn } = require("../utils/productPublishedColumn");
 
 // คอลัมน์ที่แก้ผ่าน PUT /api/products/:id ได้ (ไม่รวม id, created_by, created_at)
 const UPDATABLE_FIELDS = new Set([
@@ -12,7 +13,7 @@ const UPDATABLE_FIELDS = new Set([
   "labor_cost", "diamonds", "diamond_total_cost",
   "has_certificate", "certificate_no",
   "cost_price", "sale_price", "stock_qty", "is_available",
-  "partner_commission_pct",
+  "partner_commission_pct", "is_published",
 ]);
 
 // รายการคอลัมน์แบบไม่เอา photo_url — ใช้กับ ?light=true
@@ -32,6 +33,10 @@ const LIGHT_COLUMNS = [
 // ★ ไม่มี photos (อาเรย์ 4 รูป) เด็ดขาด ไม่งั้นหน้าสต๊อกจะลากรูปมามากกว่าเดิม 4 เท่า
 //   อยากได้ photos ให้ยิง GET /api/products/:id ทีละชิ้น (ตอนเปิดฟอร์มแก้ไข)
 const FULL_COLUMNS = LIGHT_COLUMNS.replace("(photo_url IS NOT NULL) AS has_photo", "photo_url");
+
+// is_published เพิ่งเพิ่มทีหลัง — ฐานที่ยังไม่ได้ไมเกรตจะไม่มีคอลัมน์นี้
+// ต่อท้ายเฉพาะตอนที่คอลัมน์มีจริง ไม่งั้น SELECT พังทั้งหน้าสต๊อก
+const withPublished = (columns, ok) => (ok ? `${columns}, is_published` : columns);
 
 // GET /api/products?category=ring&search=แหวน&available=true
 async function listProducts(req, res) {
@@ -57,7 +62,8 @@ async function listProducts(req, res) {
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
   try {
-    const columns = light === "true" ? LIGHT_COLUMNS : FULL_COLUMNS;
+    const hasPublished = await ensureProductPublishedColumn();
+    const columns = withPublished(light === "true" ? LIGHT_COLUMNS : FULL_COLUMNS, hasPublished);
     const { rows } = await pool.query(
       `SELECT ${columns} FROM products ${where} ORDER BY created_at DESC`,
       values
@@ -95,7 +101,7 @@ async function createProduct(req, res) {
     labor_cost, diamonds, diamond_total_cost,
     has_certificate, certificate_no,
     cost_price, sale_price, stock_qty,
-    partner_commission_pct,
+    partner_commission_pct, is_published,
   } = req.body;
 
   if (!sku || !name || !cost_price || !sale_price) {
@@ -105,6 +111,7 @@ async function createProduct(req, res) {
   // คอลัมน์ photos ยังไม่มี (ยังไม่เคยไมเกรต) → ถอยไปบันทึกรูปหลักรูปเดียว
   // ห้ามปล่อยให้ INSERT พัง เพราะจะเพิ่มสินค้าไม่ได้ทั้งหน้า
   const hasPhotos = await ensureProductPhotosColumn();
+  const hasPublished = await ensureProductPublishedColumn();
   const photoList = Array.isArray(photos) ? photos.filter(Boolean).slice(0, 4) : [];
   const mainPhoto = photo_url || photoList[0] || null;
 
@@ -121,14 +128,16 @@ async function createProduct(req, res) {
     ["diamonds", JSON.stringify(diamonds || [])], ["diamond_total_cost", diamond_total_cost || 0],
     ["has_certificate", has_certificate || false], ["certificate_no", certificate_no || null],
     ["cost_price", cost_price], ["sale_price", sale_price], ["stock_qty", stock_qty || 1],
-    ["partner_commission_pct", partner_commission_pct || 0], ["created_by", req.user.id],
+    ["partner_commission_pct", partner_commission_pct || 0],
+    ...(hasPublished ? [["is_published", is_published === true]] : []),
+    ["created_by", req.user.id],
   ];
 
   try {
     const { rows } = await pool.query(
       `INSERT INTO products (${cols.map(([c]) => `"${c}"`).join(", ")})
        VALUES (${cols.map((_, i) => `$${i + 1}`).join(", ")})
-       RETURNING ${FULL_COLUMNS}`,
+       RETURNING ${withPublished(FULL_COLUMNS, hasPublished)}`,
       cols.map(([, v]) => v)
     );
     res.status(201).json(rows[0]);
@@ -144,6 +153,10 @@ async function createProduct(req, res) {
 // PUT /api/products/:id
 async function updateProduct(req, res) {
   const fields = { ...req.body };
+
+  // ฐานที่ยังไม่ไมเกรต → ตัดทิ้งไปเลย ไม่งั้น UPDATE พังทั้งคำขอ
+  const hasPublished = await ensureProductPublishedColumn();
+  if (!hasPublished) delete fields.is_published;
 
   // ส่ง photos มา → แปลงเป็น JSON string + บังคับรูปหลักให้ตรงกับ photos[0] เสมอ
   // (ถ้าปล่อยให้ 2 คอลัมน์หลุดกัน หน้าสต๊อกจะโชว์คนละรูปกับที่เลือกไว้)
@@ -168,9 +181,10 @@ async function updateProduct(req, res) {
   // ส่งรูปกลับเฉพาะตอนที่แก้รูปจริง — ปุ่ม +/- จำนวนคงเหลือยิง PUT ทุกครั้งที่กด
   // ถ้า RETURNING * ตลอด จะดาวน์โหลดรูป base64 กลับมาทุกครั้งที่กดปุ่มโดยไม่ได้ใช้
   // ★ ไม่ใช้ "*" เพราะจะลาก photos (สูงสุด 4 รูป base64) กลับมาด้วยโดยไม่ได้ใช้
-  const returning = keys.includes("photo_url") || keys.includes("photos")
-    ? FULL_COLUMNS
-    : LIGHT_COLUMNS;
+  const returning = withPublished(
+    keys.includes("photo_url") || keys.includes("photos") ? FULL_COLUMNS : LIGHT_COLUMNS,
+    hasPublished
+  );
 
   try {
     const { rows } = await pool.query(
