@@ -199,6 +199,41 @@ async function updateProduct(req, res) {
   }
 }
 
+// PATCH /api/products/publish — ติ๊ก/เอาออก Show in catalog หลายชิ้นในคำขอเดียว
+// ปุ่ม "Show all in catalog" กดทีเดียวโดนเป็นร้อยชิ้น ถ้ายิง PUT ทีละชิ้น
+// จะช้ามากและค้างกลางทางได้ (Render แผนฟรีตื่นช้า) จึงรวบเป็น UPDATE เดียว
+async function setPublishedBulk(req, res) {
+  const { ids, is_published } = req.body;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "ต้องส่ง ids มาอย่างน้อย 1 รายการ" });
+  }
+  if (ids.length > 2000) {
+    return res.status(400).json({ error: "ส่งมาเกิน 2000 รายการต่อครั้ง" });
+  }
+
+  const hasPublished = await ensureProductPublishedColumn();
+  if (!hasPublished) {
+    return res.status(503).json({ error: "ยังเพิ่มคอลัมน์ is_published ไม่สำเร็จ ลองใหม่อีกครั้ง" });
+  }
+
+  try {
+    // id เป็น UUID ไม่ใช่ int — cast ผิดชนิดแล้ว Postgres ฟ้องทันที
+    const { rows } = await pool.query(
+      `UPDATE products SET is_published = $1 WHERE id = ANY($2::uuid[])
+       RETURNING id, is_published`,
+      [is_published === true, ids]
+    );
+    res.json({ updated: rows.length, items: rows });
+  } catch (err) {
+    if (err.code === "22P02") {
+      return res.status(400).json({ error: "รหัสสินค้าไม่ถูกต้อง" });
+    }
+    console.error(err);
+    res.status(500).json({ error: "ไม่สามารถอัพเดต Show in catalog ได้" });
+  }
+}
+
 // DELETE /api/products/:id
 async function deleteProduct(req, res) {
   try {
@@ -210,4 +245,4 @@ async function deleteProduct(req, res) {
   }
 }
 
-module.exports = { listProducts, getProduct, createProduct, updateProduct, deleteProduct };
+module.exports = { listProducts, getProduct, createProduct, updateProduct, setPublishedBulk, deleteProduct };
