@@ -4,6 +4,7 @@
 const pool = require("../config/db");
 const { ensureProductPhotosColumn } = require("../utils/productPhotosColumn");
 const { ensureProductPublishedColumn } = require("../utils/productPublishedColumn");
+const { ensureProductPlatinumColumn } = require("../utils/productPlatinumColumn");
 
 // คอลัมน์ที่แก้ผ่าน PUT /api/products/:id ได้ (ไม่รวม id, created_by, created_at)
 const UPDATABLE_FIELDS = new Set([
@@ -13,7 +14,7 @@ const UPDATABLE_FIELDS = new Set([
   "labor_cost", "diamonds", "diamond_total_cost",
   "has_certificate", "certificate_no",
   "cost_price", "sale_price", "stock_qty", "is_available",
-  "partner_commission_pct", "is_published",
+  "partner_commission_pct", "is_published", "platinum_price_at_creation",
 ]);
 
 // รายการคอลัมน์แบบไม่เอา photo_url — ใช้กับ ?light=true
@@ -101,7 +102,7 @@ async function createProduct(req, res) {
     labor_cost, diamonds, diamond_total_cost,
     has_certificate, certificate_no,
     cost_price, sale_price, stock_qty,
-    partner_commission_pct, is_published,
+    partner_commission_pct, is_published, platinum_price_at_creation,
   } = req.body;
 
   if (!sku || !name || !cost_price || !sale_price) {
@@ -112,6 +113,7 @@ async function createProduct(req, res) {
   // ห้ามปล่อยให้ INSERT พัง เพราะจะเพิ่มสินค้าไม่ได้ทั้งหน้า
   const hasPhotos = await ensureProductPhotosColumn();
   const hasPublished = await ensureProductPublishedColumn();
+  const hasPlatinum  = await ensureProductPlatinumColumn();
   const photoList = Array.isArray(photos) ? photos.filter(Boolean).slice(0, 4) : [];
   const mainPhoto = photo_url || photoList[0] || null;
 
@@ -124,6 +126,7 @@ async function createProduct(req, res) {
     ["metal_weight_g", metal_weight_g || null], ["metal_weight_adj_g", metal_weight_adj_g || null],
     ["gold_price_at_creation", gold_price_at_creation || null],
     ["silver_price_at_creation", silver_price_at_creation || null],
+    ...(hasPlatinum ? [["platinum_price_at_creation", platinum_price_at_creation || null]] : []),
     ["metal_cost", metal_cost || 0], ["labor_cost", labor_cost || 0],
     ["diamonds", JSON.stringify(diamonds || [])], ["diamond_total_cost", diamond_total_cost || 0],
     ["has_certificate", has_certificate || false], ["certificate_no", certificate_no || null],
@@ -157,6 +160,8 @@ async function updateProduct(req, res) {
   // ฐานที่ยังไม่ไมเกรต → ตัดทิ้งไปเลย ไม่งั้น UPDATE พังทั้งคำขอ
   const hasPublished = await ensureProductPublishedColumn();
   if (!hasPublished) delete fields.is_published;
+  const hasPlatinum = await ensureProductPlatinumColumn();
+  if (!hasPlatinum) delete fields.platinum_price_at_creation;
 
   // ส่ง photos มา → แปลงเป็น JSON string + บังคับรูปหลักให้ตรงกับ photos[0] เสมอ
   // (ถ้าปล่อยให้ 2 คอลัมน์หลุดกัน หน้าสต๊อกจะโชว์คนละรูปกับที่เลือกไว้)
