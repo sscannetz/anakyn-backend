@@ -15,6 +15,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:8081",
   "https://dist-tau-eight-30.vercel.app",
+  "https://otw2you.anakyngems.com",   // เว็บแคตตาล็อก (โดเมนย่อยของร้าน)
 ].filter(Boolean);
 
 app.use(cors({
